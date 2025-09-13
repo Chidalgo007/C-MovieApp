@@ -1,0 +1,9 @@
+dotnet build → compile project
+
+dotnet run → run project
+
+dotnet new console -n AppName → new console project
+
+dotnet new classlib -n LibraryName → new class library
+
+dotnet add package <PackageName> → add NuGet package
