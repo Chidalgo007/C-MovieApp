@@ -7,6 +7,10 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
 using Newtonsoft.Json;
+using System.Threading.Tasks;
+using System.Text.Json;
+using System.Net.Http;
+using Newtonsoft.Json.Linq;
 
 
 
@@ -18,11 +22,13 @@ namespace MovieLibrary
         private ObservableCollection<MovieItem> Movies { get; set; } = new();
         private ObservableCollection<SeriesItem> Series { get; set; } = new();
         private ObservableCollection<SeriesItem> Anime { get; set; } = new();
+        private ObservableCollection<MovieItem> AllMovies { get; set; } = new(); // Keep all movies here
 
         // Track folders
         private List<string> MovieFolders = new();
         private List<string> SeriesFolders = new();
         private List<string> AnimeFolders = new();
+        private string currentSearchText = "";
 
         public MainWindow()
         {
@@ -30,34 +36,52 @@ namespace MovieLibrary
             MovieGrid.ItemsSource = Movies;
             SeriesGrid.ItemsSource = Series;
             AnimeGrid.ItemsSource = Anime;
-            LoadAppData();
+            _ = LoadAppData();
         }
 
         // ---------------- Movies ----------------
-        private void AddMoviesFolder_Click(object sender, RoutedEventArgs e)
+        private async void AddMoviesFolder_Click(object sender, RoutedEventArgs e)
         {
             var folder = SelectFolder();
             if (!string.IsNullOrEmpty(folder) && !MovieFolders.Contains(folder))
             {
                 MovieFolders.Add(folder);
-                LoadFromFolders(MovieFolders, Movies);
+                await LoadFromFoldersAsync(MovieFolders, Movies);
             }
         }
 
-        private void RescanMovies_Click(object sender, RoutedEventArgs e)
+        private async void RescanMovies_Click(object sender, RoutedEventArgs e)
         {
-            LoadFromFolders(MovieFolders, Movies);
+            await LoadFromFoldersAsync(MovieFolders, Movies);
         }
 
+        // Clear Movies button - add AllMovies.Clear()
         private void ClearMovies_Click(object sender, RoutedEventArgs e)
         {
             MovieFolders.Clear();
             Movies.Clear();
+            AllMovies.Clear(); // This was missing!
+
+            // Clear the poster memory cache as well
+            PosterService.ClearMemoryCache();
+
+            // Update the count display
+            UpdateMovieCount("All", 0);
+        }
+
+        // search functionality - new method
+        private void MovieSearch_TextChanged(object sender, TextChangedEventArgs e)
+        {
+            if (sender is TextBox searchBox)
+            {
+                currentSearchText = searchBox.Text?.Trim() ?? "";
+                ApplyCurrentFilter(); // Reapply filter with search
+            }
         }
 
         private void MovieFilter_Changed(object sender, RoutedEventArgs e)
         {
-            LoadFromFolders(MovieFolders, Movies); // Reload with filter
+            ApplyCurrentFilter(); // This should only filter, not rescan
         }
 
         // ---------------- Series ----------------
@@ -74,10 +98,13 @@ namespace MovieLibrary
         private void RescanSeries_Click(object sender, RoutedEventArgs e) =>
             LoadSeriesFromFolders(SeriesFolders, Series);
 
+        // Clear Series button
         private void ClearSeries_Click(object sender, RoutedEventArgs e)
         {
             SeriesFolders.Clear();
             Series.Clear();
+            // Clear poster cache for series too
+            PosterService.ClearMemoryCache();
         }
 
         // ---------------- Anime ----------------
@@ -94,10 +121,13 @@ namespace MovieLibrary
         private void RescanAnime_Click(object sender, RoutedEventArgs e) =>
             LoadSeriesFromFolders(AnimeFolders, Anime);
 
+        // Clear Anime button
         private void ClearAnime_Click(object sender, RoutedEventArgs e)
         {
             AnimeFolders.Clear();
             Anime.Clear();
+            // Clear poster cache for anime too  
+            PosterService.ClearMemoryCache();
         }
 
         // ---------------- Helpers ----------------
@@ -107,10 +137,52 @@ namespace MovieLibrary
             return dialog.ShowDialog() == true ? dialog.SelectedPath : string.Empty;
         }
 
-        private void LoadFromFolders(List<string> folders, ObservableCollection<MovieItem> target)
+        // private void LoadFromFolders(List<string> folders, ObservableCollection<MovieItem> target)
+        // {
+        //     target.Clear();
+        //     HashSet<string> seen = new();
+
+        //     foreach (var folder in folders)
+        //     {
+        //         if (!Directory.Exists(folder)) continue;
+        //         var files = Directory.GetFiles(folder, "*.*", SearchOption.AllDirectories);
+
+        //         foreach (var file in files)
+        //         {
+        //             if (file.EndsWith(".mp4") || file.EndsWith(".mkv") || file.EndsWith(".avi"))
+        //             {
+        //                 string rawName = Path.GetFileNameWithoutExtension(file);
+        //                 string cleanTitle = CleanTitle(rawName, out int? year);
+
+        //                 if (seen.Add(cleanTitle))
+        //                 {
+        //                     var movie = new MovieItem
+        //                     {
+        //                         Title = cleanTitle,
+        //                         FilePath = file,
+        //                         Year = year
+        //                     };
+
+        //                     target.Add(movie);
+
+        //                     // fetch poster async
+        //                     Task.Run(async () =>
+        //                     {
+        //                         string poster = await PosterService.GetPosterAsync(cleanTitle, year);
+        //                         Application.Current.Dispatcher.Invoke(() => movie.PosterPath = poster);
+        //                     });
+        //                 }
+        //             }
+        //         }
+        //     }
+        // }
+
+        private async Task LoadFromFoldersAsync(List<string> folders, ObservableCollection<MovieItem> target)
         {
-            target.Clear();
+            AllMovies.Clear(); // Clear the source collection
             HashSet<string> seen = new();
+
+            List<Task> metadataTasks = new();
 
             foreach (var folder in folders)
             {
@@ -119,43 +191,180 @@ namespace MovieLibrary
 
                 foreach (var file in files)
                 {
-                    if (file.EndsWith(".mp4") || file.EndsWith(".mkv") || file.EndsWith(".avi"))
+                    if (!file.EndsWith(".mp4") && !file.EndsWith(".mkv") && !file.EndsWith(".avi"))
+                        continue;
+
+                    string rawName = Path.GetFileNameWithoutExtension(file);
+                    string cleanTitle = CleanTitle(rawName, out int? year);
+
+                    if (!seen.Add(cleanTitle))
+                        continue;
+
+                    var movie = new MovieItem
                     {
-                        string rawName = Path.GetFileNameWithoutExtension(file);
-                        string cleanTitle = CleanTitle(rawName, out int? year);
+                        Title = cleanTitle,
+                        FilePath = file,
+                        Year = year
+                    };
 
-                        if (seen.Add(cleanTitle))
+                    AllMovies.Add(movie); // Add to source collection
+
+                    // Fetch poster & metadata asynchronously
+                    var task = Task.Run(async () =>
+                    {
+                        string poster = await PosterService.GetPosterAsync(cleanTitle, year);
+                        var metadata = await FetchMovieMetadataAsync(cleanTitle, year);
+
+
+                        Application.Current.Dispatcher.Invoke(() =>
                         {
-                            var movie = new MovieItem
-                            {
-                                Title = cleanTitle,
-                                FilePath = file,
-                                Year = year
-                            };
+                            movie.PosterPath = poster;
+                            movie.GenreIds = metadata.GenreIds;
+                            movie.CountryCode = metadata.CountryCode;
+                            movie.IsMovie = metadata.IsMovie;
+                        });
+                    });
 
-                            target.Add(movie);
-
-                            // fetch poster async
-                            Task.Run(async () =>
-                            {
-                                string poster = await PosterService.GetPosterAsync(cleanTitle, year);
-                                Application.Current.Dispatcher.Invoke(() => movie.PosterPath = poster);
-                            });
-                        }
-                    }
+                    metadataTasks.Add(task);
                 }
+            }
+
+            // Wait for all metadata to finish
+            await Task.WhenAll(metadataTasks);
+
+            // Apply current filter after loading
+            ApplyCurrentFilter();
+        }
+
+        // Update ApplyCurrentFilter to handle search
+        private void ApplyCurrentFilter()
+        {
+            if (MovieFilter.SelectedItem is ComboBoxItem selected && selected.Content != null)
+            {
+                string filter = selected.Content.ToString() ?? "All";
+
+                var filtered = AllMovies.Where(m =>
+                {
+                    // First apply category filter
+                    bool categoryMatch = filter switch
+                    {
+                        "All" => true,
+                        "Kids" => m.GenreIds.Any(id => new[] { 10751, 16 }.Contains(id)),
+                        "Horror" => m.GenreIds.Any(id => id == 27),
+                        "Asian" => new[] { "JP", "KR", "CN", "HK", "TW" }.Contains(m.CountryCode),
+                        "Movies" => m.IsMovie &&
+                                   !m.GenreIds.Any(id => new[] { 10751, 16, 27 }.Contains(id)) && // Not kids or horror
+                                   !new[] { "JP", "KR", "CN", "HK", "TW" }.Contains(m.CountryCode), // Not Asian
+                        _ => true
+                    };
+
+                    // Then apply search filter if there's search text
+                    bool searchMatch = string.IsNullOrEmpty(currentSearchText) ||
+                                     m.Title.Contains(currentSearchText, StringComparison.OrdinalIgnoreCase);
+
+                    return categoryMatch && searchMatch;
+                }).ToList();
+
+                // Clear and repopulate the display collection
+                Movies.Clear();
+                foreach (var item in filtered)
+                    Movies.Add(item);
+
+                // Update the count with the filtered results
+                UpdateMovieCount(filter, filtered.Count);
             }
         }
 
-        private bool PassesFilter(string title)
+        // Update the UpdateMovieCount method to show current filter and count
+        private void UpdateMovieCount(string currentFilter = "All", int? filteredCount = null)
         {
-            string filter = ((MovieFilter.SelectedItem as System.Windows.Controls.ComboBoxItem)?.Content as string) ?? "All";
-            if (filter == "All") return true;
-            if (filter == "Kids" && title.ToLower().Contains("kids")) return true;
-            if (filter == "Horror" && title.ToLower().Contains("horror")) return true;
-            if (filter == "Asian" && title.ToLower().Contains("asian")) return true;
-            if (filter == "Movies" && !(title.ToLower().Contains("kids") || title.ToLower().Contains("horror"))) return true;
-            return false;
+            if (MovieCountLabel == null)
+                return;
+
+            int count = filteredCount ?? Movies.Count;
+            int totalCount = AllMovies.Count(m => m.IsMovie);
+
+            string filterText = currentFilter switch
+            {
+                "All" => "All Movies",
+                "Kids" => "Kids Movies",
+                "Horror" => "Horror Movies",
+                "Asian" => "Asian Movies",
+                "Movies" => "Regular Movies",
+                _ => "Movies"
+            };
+
+            // Add search indicator if searching
+            string searchIndicator = !string.IsNullOrEmpty(currentSearchText) ? $" (searching: '{currentSearchText}')" : "";
+
+            MovieCountLabel.Text = $"{filterText}: {count} / {totalCount}{searchIndicator}";
+        }
+
+        // FetchMovieMetadataAsync method with this one
+        private async Task<(List<int> GenreIds, string CountryCode, bool IsMovie)> FetchMovieMetadataAsync(string title, int? year)
+        {
+            try
+            {
+                // Use the same API key as PosterService
+                string apiKey = "653f5b1225301539044cae7a67f8234e";
+
+                // Search for the movie
+                string searchUrl = $"https://api.themoviedb.org/3/search/movie?api_key={apiKey}&query={Uri.EscapeDataString(title)}";
+                if (year != null)
+                    searchUrl += $"&year={year}";
+
+                using var http = new HttpClient();
+                string searchJson = await http.GetStringAsync(searchUrl);
+                var searchResults = JObject.Parse(searchJson)["results"] as JArray;
+
+                if (searchResults != null && searchResults.Count > 0)
+                {
+                    var movie = searchResults[0];
+                    int movieId = movie["id"]?.Value<int>() ?? 0;
+
+                    if (movieId > 0)
+                    {
+                        // Get detailed movie info including production countries
+                        string detailUrl = $"https://api.themoviedb.org/3/movie/{movieId}?api_key={apiKey}";
+                        string detailJson = await http.GetStringAsync(detailUrl);
+                        var movieDetails = JObject.Parse(detailJson);
+
+                        // Extract genre IDs
+                        var genreIds = new List<int>();
+                        var genres = movieDetails["genres"] as JArray;
+                        if (genres != null)
+                        {
+                            foreach (var genre in genres)
+                            {
+                                int genreId = genre["id"]?.Value<int>() ?? 0;
+                                if (genreId > 0)
+                                    genreIds.Add(genreId);
+                            }
+                        }
+
+                        // Extract country code (use first production country)
+                        string countryCode = "US"; // default
+                        var countries = movieDetails["production_countries"] as JArray;
+                        if (countries != null && countries.Count > 0)
+                        {
+                            countryCode = countries[0]["iso_3166_1"]?.ToString() ?? "US";
+                        }
+
+                        // It's a movie (not a TV series)
+                        bool isMovie = true;
+
+                        return (genreIds, countryCode, isMovie);
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                // Log the error or handle it as needed
+                System.Diagnostics.Debug.WriteLine($"Error fetching metadata for {title}: {ex.Message}");
+            }
+
+            // Fallback: return default values
+            return (new List<int>(), "US", true);
         }
 
         private void Poster_Click(object sender, System.Windows.Input.MouseButtonEventArgs e)
@@ -164,7 +373,25 @@ namespace MovieLibrary
             {
                 try
                 {
-                    Process.Start("vlc.exe", $"\"{movie.FilePath}\"");
+                    string vlcPath = @"C:\Program Files\VideoLAN\VLC\vlc.exe";
+
+                    if (!File.Exists(vlcPath))
+                        vlcPath = @"C:\Program Files (x86)\VideoLAN\VLC\vlc.exe";
+
+                    if (File.Exists(vlcPath))
+                    {
+
+                        Process.Start(new ProcessStartInfo
+                        {
+                            FileName = vlcPath,
+                            Arguments = $"--fullscreen \"{movie.FilePath}\"",
+                            UseShellExecute = true
+                        });
+                    }
+                    else
+                    {
+                        MessageBox.Show("VLC not found. Please install it or add it to PATH.");
+                    }
                 }
                 catch
                 {
@@ -175,7 +402,7 @@ namespace MovieLibrary
         private readonly string AppDataPath =
         Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "MovieLibrary", "appdata.json");
 
-        private void LoadAppData()
+        private async Task LoadAppData()
         {
             try
             {
@@ -186,12 +413,12 @@ namespace MovieLibrary
 
                     if (data != null)
                     {
-                        MovieFolders = data.MovieFolders;
-                        SeriesFolders = data.SeriesFolders;
-                        AnimeFolders = data.AnimeFolders;
+                        MovieFolders = data.MovieFolders ?? new List<string>(); // Add null check
+                        SeriesFolders = data.SeriesFolders ?? new List<string>(); // Add null check
+                        AnimeFolders = data.AnimeFolders ?? new List<string>(); // Add null check
 
                         // Load movies from saved folders
-                        LoadFromFolders(MovieFolders, Movies);
+                        await LoadFromFoldersAsync(MovieFolders, Movies);
                         LoadSeriesFromFolders(SeriesFolders, Series);
                         LoadSeriesFromFolders(AnimeFolders, Anime);
                     }
@@ -232,39 +459,73 @@ namespace MovieLibrary
             base.OnClosing(e);
         }
 
+
         private string CleanTitle(string rawName, out int? year)
         {
             year = null;
-
-            // 1. Try to extract year (1990–2029 range)
-            var match = System.Text.RegularExpressions.Regex.Match(rawName, @"\b(19|20)\d{2}\b");
-            if (match.Success)
+            try
             {
-                year = int.Parse(match.Value);
-                rawName = rawName.Replace(match.Value, "");
+                // Step 1: Replace separators
+                string title = rawName.Replace('.', ' ')
+                                      .Replace('_', ' ')
+                                      .Replace('-', ' ')
+                                      .Trim();
+
+                // Step 2: Extract year (1900–2099)
+                var yearMatch = System.Text.RegularExpressions.Regex.Match(title, @"\b(19|20)\d{2}\b");
+                if (yearMatch.Success)
+                {
+                    year = int.Parse(yearMatch.Value);
+                    // Remove year from title (poster fetch will handle it separately)
+                    title = title.Replace(yearMatch.Value, "");
+                }
+
+                // Step 3: Remove common junk tokens
+                string[] junkTokens = {
+    "1080p","720p","2160p","4k","x264","x265","h264","h265",
+    "bluray","brrip","bdrip","dvdrip","webrip","web-dl","hdrip",
+    "aac","dts","ac3","dd5.1","atmos",
+    "yify","rarbg","amzn","hd","fhd","uhd","hdr",
+    "extended","unrated","remastered","directors.cut",
+    "multi","dual","dubbed","sub","vostfr",
+    "repack","proper","limited","uncut","internal",
+    "DC","RARBG", "ETRG", "Ganool", "YTS", "EVO", "FGT", "MkvCage", "MkvCinemas",
+    "BluRay", "BRRip", "WEBRip", "WEB-DL", "HDRip", "DVDRip", "HDTV",
+    "XviD", "DivX", "HDCAM", "CAM", "TS", "TC", "SCR", "DVDScr",
+    "HDR", "UHD", "HEVC", "H.265", "H.264",
+    "DD5.1", "DTS-HD", "DTS", "Atmos", "AC3",
+    "Subs", "Dubbed", "Dual Audio", "VOSTFR", "MULTI",
+    "Director's Cut", "Extended Edition", "Unrated", "Remastered",
+    "WEB", "HD", "FHD", "10bit", "AAC","AAC5.1","AAC2.0","AAC5 1"
+};
+
+                foreach (var token in junkTokens)
+                {
+                    title = System.Text.RegularExpressions.Regex.Replace(title,
+                        @"\b" + token + @"\b", "", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+                }
+
+                // Step 4: Remove brackets and parentheses content
+                title = System.Text.RegularExpressions.Regex.Replace(title, @"\[.*?\]", "");
+                title = System.Text.RegularExpressions.Regex.Replace(title, @"\(.*?\)", "");
+
+                // Step 5: Collapse multiple spaces
+                title = System.Text.RegularExpressions.Regex.Replace(title, @"\s+", " ").Trim();
+
+                return title;
             }
-
-            // 2. Remove common junk tags
-            string[] junkTokens = {
-        "1080p", "720p", "2160p", "4k", "x264", "x265", "h264", "h265",
-        "bluray", "brrip", "bdrip", "dvdrip", "webrip", "web-dl", "hdrip",
-        "aac", "dts", "ac3", "yify", "rarbg", "dc", "extended", "unrated"
-    };
-
-            foreach (var token in junkTokens)
-                rawName = System.Text.RegularExpressions.Regex.Replace(rawName,
-                    @"\b" + token + @"\b", "", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
-
-            // 3. Replace separators with spaces
-            rawName = rawName.Replace('.', ' ')
-                             .Replace('_', ' ')
-                             .Replace('-', ' ');
-
-            // 4. Collapse multiple spaces
-            rawName = System.Text.RegularExpressions.Regex.Replace(rawName, @"\s+", " ");
-
-            return rawName.Trim();
+            catch
+            {
+                // Fallback simple cleaning
+                var fallback = rawName.Replace('.', ' ')
+                                      .Replace('_', ' ')
+                                      .Replace('-', ' ');
+                fallback = System.Text.RegularExpressions.Regex.Replace(fallback, @"\s+", " ").Trim();
+                return fallback;
+            }
         }
+
+
         private (int? season, int? episode) ParseSeasonEpisode(string filename)
         {
             // Match patterns like S01E05, s1e5, 1x05
@@ -344,10 +605,10 @@ namespace MovieLibrary
 
                     // Fetch poster async like movies
                     Task.Run(async () =>
-                    {
-                        string poster = await PosterService.GetPosterAsync(seriesTitle);
-                        Application.Current.Dispatcher.Invoke(() => seriesItem.PosterPath = poster);
-                    });
+{
+    string poster = await PosterService.GetPosterAsync(seriesTitle);
+    Application.Current.Dispatcher.Invoke(() => seriesItem.PosterPath = poster);
+});
                 }
             }
         }
@@ -384,6 +645,99 @@ namespace MovieLibrary
         {
             AnimeBackButton.Visibility = Visibility.Collapsed;
             AnimeContentArea.Content = AnimeGrid;
+        }
+        private void CloseButton_Click(object sender, RoutedEventArgs e)
+        {
+            Application.Current.Shutdown();
+        }
+
+        // Method to manually replace a poster
+        private void ReplacePoster_Click(object sender, RoutedEventArgs e)
+        {
+            if (sender is MenuItem menuItem && menuItem.DataContext is MovieItem movie)
+            {
+                var openFileDialog = new Microsoft.Win32.OpenFileDialog
+                {
+                    Title = "Select New Poster Image",
+                    Filter = "Image files (*.jpg;*.jpeg;*.png;*.bmp)|*.jpg;*.jpeg;*.png;*.bmp|All files (*.*)|*.*",
+                    FilterIndex = 1
+                };
+
+                if (openFileDialog.ShowDialog() == true)
+                {
+                    try
+                    {
+                        // Create a safe filename for the custom poster
+                        string safeName = string.Join("_", movie.Title.Split(Path.GetInvalidFileNameChars()));
+                        if (movie.Year != null)
+                            safeName += $"_{movie.Year}";
+
+                        string customPosterPath = Path.Combine(
+                            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "MovieLibrary", "Posters"),
+                            safeName + "_custom.jpg"
+                        );
+
+                        // Copy the selected image to our poster cache folder
+                        File.Copy(openFileDialog.FileName, customPosterPath, true);
+
+                        // Update the movie's poster path
+                        movie.PosterPath = customPosterPath;
+
+                        // Update the memory cache
+                        string cacheKey = movie.Year != null ? $"{movie.Title}_{movie.Year}" : movie.Title;
+                        PosterService.UpdateMemoryCache(cacheKey, customPosterPath);
+
+                        MessageBox.Show("Poster updated successfully!");
+                    }
+                    catch (Exception ex)
+                    {
+                        MessageBox.Show($"Failed to update poster: {ex.Message}");
+                    }
+                }
+            }
+        }
+
+        // Method to reset poster to original API version
+        private void ResetPoster_Click(object sender, RoutedEventArgs e)
+        {
+            if (sender is MenuItem menuItem && menuItem.DataContext is MovieItem movie)
+            {
+                try
+                {
+                    // Remove custom poster file if it exists
+                    string safeName = string.Join("_", movie.Title.Split(Path.GetInvalidFileNameChars()));
+                    if (movie.Year != null)
+                        safeName += $"_{movie.Year}";
+
+                    string customPosterPath = Path.Combine(
+                        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "MovieLibrary", "Posters"),
+                        safeName + "_custom.jpg"
+                    );
+
+                    if (File.Exists(customPosterPath))
+                        File.Delete(customPosterPath);
+
+                    // Clear from memory cache
+                    string cacheKey = movie.Year != null ? $"{movie.Title}_{movie.Year}" : movie.Title;
+                    PosterService.ClearMemoryCacheItem(cacheKey);
+
+                    // Re-fetch from API
+                    Task.Run(async () =>
+                    {
+                        string newPoster = await PosterService.GetPosterAsync(movie.Title, movie.Year);
+                        Application.Current.Dispatcher.Invoke(() =>
+                        {
+                            movie.PosterPath = newPoster;
+                        });
+                    });
+
+                    MessageBox.Show("Poster reset to original!");
+                }
+                catch (Exception ex)
+                {
+                    MessageBox.Show($"Failed to reset poster: {ex.Message}");
+                }
+            }
         }
 
     }

@@ -7,3 +7,8 @@ dotnet new console -n AppName → new console project
 dotnet new classlib -n LibraryName → new class library
 
 dotnet add package <PackageName> → add NuGet package
+
+
+
+cd folder
+dotnet publish -c Release -r win-x64 --self-contained true /p:PublishSingleFile=true /p:IncludeAllContentForSelfExtract=true

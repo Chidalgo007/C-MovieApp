@@ -1,6 +1,7 @@
 using System.Windows;
 using System.Windows.Controls;
 using System.Diagnostics;
+using System.IO;
 
 namespace MovieLibrary
 {
@@ -19,17 +20,21 @@ namespace MovieLibrary
           Text = $"Season {season.Number}",
           FontWeight = FontWeights.Bold,
           FontSize = 16,
+          Foreground = System.Windows.Media.Brushes.White,
+          TextAlignment = TextAlignment.Center,
+          HorizontalAlignment = HorizontalAlignment.Center,
           Margin = new Thickness(0, 10, 0, 5)
         };
         SeasonsPanel.Children.Add(seasonHeader);
 
         var episodePanel = new StackPanel { Margin = new Thickness(10, 0, 0, 0) };
-        foreach (var ep in season.Episodes)
+        foreach (var ep in season.Episodes.OrderBy(ep => ep.Number))
         {
           var btn = new Button
           {
-            Content = $"Episode {ep.Number}: {ep.Title}",
+            Content = string.IsNullOrEmpty(ep.Title) ? $"Episode {ep.Number}" : ep.Title,
             Tag = ep.FilePath,
+            Style = (Style)FindResource("EpisodeButtonStyle"),
             Margin = new Thickness(0, 2, 0, 2)
           };
           btn.Click += Episode_Click;
@@ -45,7 +50,25 @@ namespace MovieLibrary
       {
         try
         {
-          Process.Start("vlc.exe", $"\"{path}\"");
+          string vlcPath = @"C:\Program Files\VideoLAN\VLC\vlc.exe";
+
+          if (!File.Exists(vlcPath))
+            vlcPath = @"C:\Program Files (x86)\VideoLAN\VLC\vlc.exe";
+
+          if (File.Exists(vlcPath))
+          {
+
+            Process.Start(new ProcessStartInfo
+            {
+              FileName = vlcPath,
+              Arguments = $"--fullscreen \"{path}\"",
+              UseShellExecute = true
+            });
+          }
+          else
+          {
+            MessageBox.Show("VLC not found. Please install it or add it to PATH.");
+          }
         }
         catch
         {
