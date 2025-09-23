@@ -591,5 +591,60 @@
 
             <!--  End Anime Tab  -->
         </TabControl>
+
+        <!--  Loading Overlay  -->
+        <Grid
+            x:Name="LoadingOverlay"
+            Panel.ZIndex="1000"
+            Background="#80000000"
+            Visibility="Collapsed">
+            <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center">
+
+                <!--  Spinning Loading Icon  -->
+                <Grid
+                    x:Name="LoadingSpinner"
+                    Width="80"
+                    Height="80"
+                    Margin="0,0,0,20">
+                    <Grid.Resources>
+                        <Storyboard x:Key="SpinAnimation" RepeatBehavior="Forever">
+                            <DoubleAnimation
+                                Storyboard.TargetName="SpinnerTransform"
+                                Storyboard.TargetProperty="Angle"
+                                From="0"
+                                To="360"
+                                Duration="0:0:2" />
+                        </Storyboard>
+                    </Grid.Resources>
+
+                    <Ellipse
+                        Fill="Transparent"
+                        Stroke="#4CAF50"
+                        StrokeDashArray="15,5"
+                        StrokeThickness="6">
+                        <Ellipse.RenderTransform>
+                            <RotateTransform x:Name="SpinnerTransform" CenterX="40" CenterY="40" />
+                        </Ellipse.RenderTransform>
+                    </Ellipse>
+                </Grid>
+
+                <!--  Loading Text  -->
+                <TextBlock
+                    HorizontalAlignment="Center"
+                    FontSize="18"
+                    FontWeight="SemiBold"
+                    Foreground="White"
+                    Text="Loading Movies..." />
+
+                <!--  Progress Text  -->
+                <TextBlock
+                    x:Name="LoadingProgressText"
+                    Margin="0,10,0,0"
+                    HorizontalAlignment="Center"
+                    FontSize="14"
+                    Foreground="#CCCCCC"
+                    Text="" />
+            </StackPanel>
+        </Grid>
     </DockPanel>
 </Window>

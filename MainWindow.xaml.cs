@@ -11,6 +11,7 @@ using System.Threading.Tasks;
 using System.Text.Json;
 using System.Net.Http;
 using Newtonsoft.Json.Linq;
+using System.Windows.Media.Animation;
 
 
 
@@ -29,6 +30,8 @@ namespace MovieLibrary
         private List<string> SeriesFolders = new();
         private List<string> AnimeFolders = new();
         private string currentSearchText = "";
+        private int totalMoviesToLoad = 0;
+        private int moviesLoaded = 0;
 
         public MainWindow()
         {
@@ -137,103 +140,123 @@ namespace MovieLibrary
             return dialog.ShowDialog() == true ? dialog.SelectedPath : string.Empty;
         }
 
-        // private void LoadFromFolders(List<string> folders, ObservableCollection<MovieItem> target)
-        // {
-        //     target.Clear();
-        //     HashSet<string> seen = new();
+        private void ShowLoadingOverlay()
+        {
+            moviesLoaded = 0; // Reset counter when starting
+            if (LoadingOverlay != null)
+            {
+                LoadingOverlay.Visibility = Visibility.Visible;
+                // Start rotation animation if you have one
+                if (LoadingSpinner != null && LoadingSpinner.FindResource("SpinAnimation") is Storyboard spinStoryboard)
+                {
+                    spinStoryboard.Begin();
+                }
+            }
+        }
 
-        //     foreach (var folder in folders)
-        //     {
-        //         if (!Directory.Exists(folder)) continue;
-        //         var files = Directory.GetFiles(folder, "*.*", SearchOption.AllDirectories);
-
-        //         foreach (var file in files)
-        //         {
-        //             if (file.EndsWith(".mp4") || file.EndsWith(".mkv") || file.EndsWith(".avi"))
-        //             {
-        //                 string rawName = Path.GetFileNameWithoutExtension(file);
-        //                 string cleanTitle = CleanTitle(rawName, out int? year);
-
-        //                 if (seen.Add(cleanTitle))
-        //                 {
-        //                     var movie = new MovieItem
-        //                     {
-        //                         Title = cleanTitle,
-        //                         FilePath = file,
-        //                         Year = year
-        //                     };
-
-        //                     target.Add(movie);
-
-        //                     // fetch poster async
-        //                     Task.Run(async () =>
-        //                     {
-        //                         string poster = await PosterService.GetPosterAsync(cleanTitle, year);
-        //                         Application.Current.Dispatcher.Invoke(() => movie.PosterPath = poster);
-        //                     });
-        //                 }
-        //             }
-        //         }
-        //     }
-        // }
+        private void HideLoadingOverlay()
+        {
+            if (LoadingOverlay != null)
+            {
+                LoadingOverlay.Visibility = Visibility.Collapsed;
+                // Stop rotation animation
+                if (LoadingSpinner != null && LoadingSpinner.FindResource("SpinAnimation") is Storyboard spinStoryboard)
+                {
+                    spinStoryboard.Stop();
+                }
+                // Clear the progress text when hiding
+                if (LoadingProgressText != null)
+                {
+                    LoadingProgressText.Text = "";
+                }
+            }
+        }
 
         private async Task LoadFromFoldersAsync(List<string> folders, ObservableCollection<MovieItem> target)
         {
-            AllMovies.Clear(); // Clear the source collection
-            HashSet<string> seen = new();
+            ShowLoadingOverlay();
 
-            List<Task> metadataTasks = new();
-
-            foreach (var folder in folders)
+            try
             {
-                if (!Directory.Exists(folder)) continue;
-                var files = Directory.GetFiles(folder, "*.*", SearchOption.AllDirectories);
+                AllMovies.Clear();
+                HashSet<string> seen = new();
+                List<Task> metadataTasks = new();
 
-                foreach (var file in files)
+                // First pass: count total movies
+                totalMoviesToLoad = 0;
+                foreach (var folder in folders)
                 {
-                    if (!file.EndsWith(".mp4") && !file.EndsWith(".mkv") && !file.EndsWith(".avi"))
-                        continue;
-
-                    string rawName = Path.GetFileNameWithoutExtension(file);
-                    string cleanTitle = CleanTitle(rawName, out int? year);
-
-                    if (!seen.Add(cleanTitle))
-                        continue;
-
-                    var movie = new MovieItem
-                    {
-                        Title = cleanTitle,
-                        FilePath = file,
-                        Year = year
-                    };
-
-                    AllMovies.Add(movie); // Add to source collection
-
-                    // Fetch poster & metadata asynchronously
-                    var task = Task.Run(async () =>
-                    {
-                        string poster = await PosterService.GetPosterAsync(cleanTitle, year);
-                        var metadata = await FetchMovieMetadataAsync(cleanTitle, year);
-
-
-                        Application.Current.Dispatcher.Invoke(() =>
-                        {
-                            movie.PosterPath = poster;
-                            movie.GenreIds = metadata.GenreIds;
-                            movie.CountryCode = metadata.CountryCode;
-                            movie.IsMovie = metadata.IsMovie;
-                        });
-                    });
-
-                    metadataTasks.Add(task);
+                    if (!Directory.Exists(folder)) continue;
+                    var files = Directory.GetFiles(folder, "*.*", SearchOption.AllDirectories);
+                    totalMoviesToLoad += files.Count(f => f.EndsWith(".mp4") || f.EndsWith(".mkv") || f.EndsWith(".avi"));
                 }
+
+                // Update initial progress
+                Application.Current.Dispatcher.Invoke(() =>
+                {
+                    if (LoadingProgressText != null)
+                    {
+                        LoadingProgressText.Text = $"Found {totalMoviesToLoad} movies to load...";
+                    }
+                });
+
+                foreach (var folder in folders)
+                {
+                    if (!Directory.Exists(folder)) continue;
+                    var files = Directory.GetFiles(folder, "*.*", SearchOption.AllDirectories);
+
+                    foreach (var file in files)
+                    {
+                        if (!file.EndsWith(".mp4") && !file.EndsWith(".mkv") && !file.EndsWith(".avi"))
+                            continue;
+
+                        string rawName = Path.GetFileNameWithoutExtension(file);
+                        string cleanTitle = CleanTitle(rawName, out int? year);
+
+                        if (!seen.Add(cleanTitle))
+                            continue;
+
+                        var movie = new MovieItem
+                        {
+                            Title = cleanTitle,
+                            FilePath = file,
+                            Year = year
+                        };
+
+                        AllMovies.Add(movie);
+
+                        var task = Task.Run(async () =>
+                        {
+                            string poster = await PosterService.GetPosterAsync(cleanTitle, year);
+                            var metadata = await FetchMovieMetadataAsync(cleanTitle, year);
+
+                            Application.Current.Dispatcher.Invoke(() =>
+                            {
+                                movie.PosterPath = poster;
+                                movie.GenreIds = metadata.GenreIds;
+                                movie.CountryCode = metadata.CountryCode;
+                                movie.IsMovie = metadata.IsMovie;
+
+                                // Update progress counter
+                                moviesLoaded++;
+                                if (LoadingProgressText != null)
+                                {
+                                    LoadingProgressText.Text = $"Loading... {moviesLoaded} of {totalMoviesToLoad}";
+                                }
+                            });
+                        });
+
+                        metadataTasks.Add(task);
+                    }
+                }
+
+                await Task.WhenAll(metadataTasks);
+                ApplyCurrentFilter();
             }
-
-            // Wait for all metadata to finish
-            await Task.WhenAll(metadataTasks);
-
-            // Apply current filter after loading
-            ApplyCurrentFilter();
+            finally
+            {
+                HideLoadingOverlay();
+            }
         }
 
         // Update ApplyCurrentFilter to handle search
@@ -418,7 +441,10 @@ namespace MovieLibrary
                         AnimeFolders = data.AnimeFolders ?? new List<string>(); // Add null check
 
                         // Load movies from saved folders
-                        await LoadFromFoldersAsync(MovieFolders, Movies);
+                        if (MovieFolders.Any())
+                        {
+                            await LoadFromFoldersAsync(MovieFolders, Movies);
+                        }
                         LoadSeriesFromFolders(SeriesFolders, Series);
                         LoadSeriesFromFolders(AnimeFolders, Anime);
                     }

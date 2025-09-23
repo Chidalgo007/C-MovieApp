@@ -93,7 +93,7 @@ namespace MovieLibrary
       try
       {
         // Try movie search first
-        string posterPath = await SearchMovie(title, year);
+        string? posterPath = await SearchMovie(title, year);
 
         // If movie search fails, try TV search (for series)
         if (string.IsNullOrEmpty(posterPath))
@@ -133,8 +133,22 @@ namespace MovieLibrary
 
         if (results != null && results.Count > 0)
         {
-          return results[0]["poster_path"]?.ToString();
+          var preferred = results.FirstOrDefault(r => r["original_language"]?.ToString() == "en");
+          var chosen = preferred ?? results[0];
+
+          var firstResult = results[0];
+          var posterToken = firstResult?["poster_path"];
+
+          if (posterToken != null)
+          {
+            string posterPath = posterToken.ToString();
+            if (!string.IsNullOrEmpty(posterPath))
+            {
+              return posterPath;
+            }
+          }
         }
+        return Placeholder;
       }
       catch (Exception ex)
       {
@@ -158,8 +172,14 @@ namespace MovieLibrary
 
         if (results != null && results.Count > 0)
         {
-          return results[0]["poster_path"]?.ToString();
+          var firstResult = results[0];
+          if (firstResult != null && firstResult["poster_path"] != null)
+          {
+            string posterPath = firstResult["poster_path"]!.ToString()!;
+            return posterPath;
+          }
         }
+        return Placeholder;
       }
       catch (Exception ex)
       {
